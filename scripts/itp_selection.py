@@ -11,12 +11,15 @@ def parse_verbose_faults(filepath):
     with open(filepath) as f:
         for line in f:
             line = line.strip()
+
+            # Match exact TetraMAX format:
+            # sa1   NC   U1503/Y   (INVX8_LVT)   ( 1: 52/1/0, SCOAP=1/1/1 0/0/0/0 )
             m = re.match(
                 r'(sa[01])\s+(NC|NO)\s+(\S+)\s+'
                 r'\((\S+)\)\s+'
-                r'\(\d+:\s*\S+,\s*'
-                r'SCOAP\s*=\s*(\d+)/(\d+)/(\d+)'
-                r'\s+(\d+)/(\d+)/(\d+)',
+                r'\(\s*\d+:\s*\S+,\s*'
+                r'SCOAP=(\d+)/(\d+)/(\d+)\s+'
+                r'(\d+)/(\d+)/(\d+)\s*\)',
                 line
             )
             if not m:
@@ -92,8 +95,8 @@ def export_and_print(candidates, method_name, score_key, circuit, itp_counts):
 
     for n in itp_counts:
         if n > len(ranked):
-            print("\n  Warning: only %d candidates available "
-                  "-- cannot export top %d" % (len(ranked), n))
+            print("\n  Warning: only %d candidates -- cannot export top %d"
+                  % (len(ranked), n))
             continue
 
         top_n = ranked[:n]
@@ -111,11 +114,7 @@ def export_and_print(candidates, method_name, score_key, circuit, itp_counts):
         print("\n  Top %d nodes --> %s" % (n, fname))
         for c in top_n:
             print("    %-20s CC0=%-5d CC1=%-5d CO=%-5d score=%.1f" % (
-                c['node'],
-                c['CC0'],
-                c['CC1'],
-                c['CO'],
-                c[score_key]
+                c['node'], c['CC0'], c['CC1'], c['CO'], c[score_key]
             ))
 
     return ranked
