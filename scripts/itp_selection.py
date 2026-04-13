@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import re
 import csv
 import sys
@@ -29,29 +30,23 @@ def parse_verbose_faults(filepath):
             CC1         = int(m.group(6))
             CO          = int(m.group(7))
 
-            # Skip reset pins and duplicates
-            if any(x in node for x in ['RSTB','RST','reset']):
+            if any(x in node for x in ['RSTB', 'RST', 'reset']):
                 continue
             if node in seen:
                 continue
             seen.add(node)
 
-            # Skip non-NC faults for XOR ITP
             if fault_class != 'NC':
                 continue
 
             CC_diff = abs(CC0 - CC1)
             CC_max  = max(CC0, CC1)
 
-            # Method 1 — Raw CC0/CC1
-            # sa1 NC → rank by CC0 (hard to set to 0)
-            # sa0 NC → rank by CC1 (hard to set to 1)
             if fault_type == 'sa1':
                 raw_score = CC0
             else:
                 raw_score = CC1
 
-            # Method 2 — Weighted scoring
             weighted_score = CC_diff * 0.5 + CC_max * 0.3 + CO * 0.2
 
             candidates.append({
@@ -74,37 +69,54 @@ def parse_verbose_faults(filepath):
 def export_and_print(candidates, method_name, score_key, circuit, itp_counts):
     ranked = sorted(candidates, key=lambda x: x[score_key], reverse=True)
 
-    print(f"\n{'='*90}")
-    print(f"  {method_name} — {circuit}")
-    print(f"{'='*90}")
-    print(f"{'Rank':<5} {'Node':<20} {'FT':<5} {'CC0':<6} {'CC1':<6} "
-          f"{'CO':<6} {'CCdiff':<8} {'Score':<10} {'Cell'}")
+    print("\n" + "="*90)
+    print("  %s -- %s" % (method_name, circuit))
+    print("="*90)
+    print("%-5s %-20s %-5s %-6s %-6s %-6s %-8s %-10s %s" % (
+        'Rank', 'Node', 'FT', 'CC0', 'CC1', 'CO', 'CCdiff', 'Score', 'Cell'
+    ))
     print("-" * 90)
 
     for i, c in enumerate(ranked[:20], 1):
-        print(f"{i:<5} {c['node']:<20} {c['fault_type']:<5} "
-              f"{c['CC0']:<6} {c['CC1']:<6} {c['CO']:<6} "
-              f"{c['CC_diff']:<8} {c[score_key]:<10.1f} {c['cell']}")
+        print("%-5d %-20s %-5s %-6d %-6d %-6d %-8d %-10.1f %s" % (
+            i,
+            c['node'],
+            c['fault_type'],
+            c['CC0'],
+            c['CC1'],
+            c['CO'],
+            c['CC_diff'],
+            c[score_key],
+            c['cell']
+        ))
 
-    # Export CSVs for each ITP count
     for n in itp_counts:
         if n > len(ranked):
-            print(f"\n  Warning: only {len(ranked)} candidates available "
-                  f"— cannot export top {n}")
+            print("\n  Warning: only %d candidates available "
+                  "-- cannot export top %d" % (len(ranked), n))
             continue
 
         top_n = ranked[:n]
-        fname = f'{circuit}_{method_name.lower().replace(" ","_")}_top{n}.csv'
+        fname = '%s_%s_top%d.csv' % (
+            circuit,
+            method_name.lower().replace(' ', '_'),
+            n
+        )
 
-        with open(fname, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=top_n[0].keys())
+        with open(fname, 'w') as f:
+            writer = csv.DictWriter(f, fieldnames=list(top_n[0].keys()))
             writer.writeheader()
             writer.writerows(top_n)
 
-        print(f"\n  Top {n} nodes → {fname}")
+        print("\n  Top %d nodes --> %s" % (n, fname))
         for c in top_n:
-            print(f"    {c['node']:<20} CC0={c['CC0']:<5} CC1={c['CC1']:<5} "
-                  f"CO={c['CO']:<5} score={c[score_key]:.1f}")
+            print("    %-20s CC0=%-5d CC1=%-5d CO=%-5d score=%.1f" % (
+                c['node'],
+                c['CC0'],
+                c['CC1'],
+                c['CO'],
+                c[score_key]
+            ))
 
     return ranked
 
@@ -125,24 +137,24 @@ def compare_methods(candidates, circuit, itp_counts):
         raw_only = raw_top - weighted_top
         wtd_only = weighted_top - raw_top
 
-        print(f"\n{'='*60}")
-        print(f"  Method comparison — {circuit} top {n} nodes")
-        print(f"{'='*60}")
-        print(f"  Nodes in BOTH methods : {len(common)}")
-        print(f"  Raw only              : {len(raw_only)}")
-        print(f"  Weighted only         : {len(wtd_only)}")
+        print("\n" + "="*60)
+        print("  Method comparison -- %s top %d nodes" % (circuit, n))
+        print("="*60)
+        print("  Nodes in BOTH methods : %d" % len(common))
+        print("  Raw only              : %d" % len(raw_only))
+        print("  Weighted only         : %d" % len(wtd_only))
 
-        print(f"\n  Common nodes (high confidence ITP targets):")
+        print("\n  Common nodes (high confidence ITP targets):")
         for node in sorted(common):
-            print(f"    {node}")
+            print("    %s" % node)
 
-        print(f"\n  Raw only:")
+        print("\n  Raw only:")
         for node in sorted(raw_only):
-            print(f"    {node}")
+            print("    %s" % node)
 
-        print(f"\n  Weighted only:")
+        print("\n  Weighted only:")
         for node in sorted(wtd_only):
-            print(f"    {node}")
+            print("    %s" % node)
 
 
 def write_summary(all_results, itp_counts):
@@ -155,93 +167,81 @@ def write_summary(all_results, itp_counts):
                 top_n = ranked[:n]
                 nodes = [c['node'] for c in top_n]
                 rows.append({
-                    'circuit'     : circuit,
-                    'method'      : method_name,
-                    'itp_count'   : n,
-                    'nodes'       : ' | '.join(nodes),
+                    'circuit'   : circuit,
+                    'method'    : method_name,
+                    'itp_count' : n,
+                    'nodes'     : ' | '.join(nodes),
                 })
 
-    with open(fname, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['circuit','method',
-                                               'itp_count','nodes'])
+    with open(fname, 'w') as f:
+        writer = csv.DictWriter(f,
+                                fieldnames=['circuit', 'method',
+                                            'itp_count', 'nodes'])
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"\n  Master summary saved → {fname}")
+    print("\n  Master summary saved --> %s" % fname)
 
 
 def process_circuit(circuit, fault_file, itp_counts):
-    print(f"\n{'#'*90}")
-    print(f"  PROCESSING CIRCUIT: {circuit.upper()}")
-    print(f"  Fault file: {fault_file}")
-    print(f"{'#'*90}")
+    print("\n" + "#"*90)
+    print("  PROCESSING CIRCUIT: %s" % circuit.upper())
+    print("  Fault file: %s" % fault_file)
+    print("#"*90)
 
-    # Check file exists
     if not os.path.exists(fault_file):
-        print(f"\n  ERROR: File not found — {fault_file}")
-        print(f"  Skipping {circuit}")
+        print("\n  ERROR: File not found -- %s" % fault_file)
+        print("  Skipping %s" % circuit)
         return None
 
     candidates = parse_verbose_faults(fault_file)
 
     if not candidates:
-        print(f"\n  ERROR: No NC fault candidates found in {fault_file}")
-        print(f"  Check that report_faults -class ND -verbose was run correctly")
+        print("\n  ERROR: No NC fault candidates found in %s" % fault_file)
+        print("  Check that report_faults -class ND -verbose was run correctly")
         return None
 
-    print(f"\n  Total NC gate-level candidates : {len(candidates)}")
-
-    # Count sa0 vs sa1
     sa0_count = sum(1 for c in candidates if c['fault_type'] == 'sa0')
     sa1_count = sum(1 for c in candidates if c['fault_type'] == 'sa1')
-    print(f"  sa1 NC faults (high CC0)       : {sa1_count}")
-    print(f"  sa0 NC faults (high CC1)       : {sa0_count}")
+
+    print("\n  Total NC gate-level candidates : %d" % len(candidates))
+    print("  sa1 NC faults (high CC0)       : %d" % sa1_count)
+    print("  sa0 NC faults (high CC1)       : %d" % sa0_count)
 
     results = {}
 
-    # Method 1 — Raw
     ranked_raw = export_and_print(
         candidates, 'Method1_Raw', 'raw_score', circuit, itp_counts
     )
     results['Method1_Raw'] = ranked_raw
 
-    # Method 2 — Weighted
     ranked_weighted = export_and_print(
         candidates, 'Method2_Weighted', 'weighted_score', circuit, itp_counts
     )
     results['Method2_Weighted'] = ranked_weighted
 
-    # Comparison
     compare_methods(candidates, circuit, itp_counts)
 
     return results
 
 
 def main():
-    # ── Configuration ────────────────────────────────────────────
-    # Map each circuit to its verbose fault report file
     circuits = {
         'b14' : 'b14_ND_verbose.rpt',
         'b15' : 'b15_ND_verbose.rpt',
         'b17' : 'b17_ND_verbose.rpt',
     }
 
-    # ITP counts to evaluate
     itp_counts = [5, 10, 15]
 
-    # ── Optional: run specific circuit from command line ─────────
-    # Usage: python3 itp_selection.py b14
-    #        python3 itp_selection.py b14 b15
-    #        python3 itp_selection.py          (runs all)
     if len(sys.argv) > 1:
         selected = sys.argv[1:]
-        circuits = {k: v for k, v in circuits.items() if k in selected}
+        circuits = dict((k, v) for k, v in circuits.items() if k in selected)
         if not circuits:
-            print(f"Error: unknown circuit(s) {sys.argv[1:]}")
-            print(f"Valid options: b14 b15 b17")
+            print("Error: unknown circuit(s) %s" % str(sys.argv[1:]))
+            print("Valid options: b14 b15 b17")
             sys.exit(1)
 
-    # ── Run ──────────────────────────────────────────────────────
     all_results = {}
 
     for circuit, fault_file in circuits.items():
@@ -249,13 +249,12 @@ def main():
         if result:
             all_results[circuit] = result
 
-    # ── Master summary CSV ────────────────────────────────────────
     if all_results:
         write_summary(all_results, itp_counts)
 
-    print(f"\n{'='*90}")
-    print(f"  DONE — processed {len(all_results)} circuit(s)")
-    print(f"{'='*90}\n")
+    print("\n" + "="*90)
+    print("  DONE -- processed %d circuit(s)" % len(all_results))
+    print("="*90 + "\n")
 
 
 if __name__ == '__main__':
