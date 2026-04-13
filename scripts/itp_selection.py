@@ -12,33 +12,45 @@ def parse_verbose_faults(filepath):
         for line in f:
             line = line.strip()
 
-            # Match exact TetraMAX format:
-            # sa1   NC   U1503/Y   (INVX8_LVT)   ( 1: 52/1/0, SCOAP=1/1/1 0/0/0/0 )
-            m = re.match(
-                r'(sa[01])\s+(NC|NO)\s+(\S+)\s+'
-                r'\((\S+)\)\s+'
-                r'\(\s*\d+:\s*\S+,\s*'
-                r'SCOAP=(\d+)/(\d+)/(\d+)\s+'
-                r'(\d+)/(\d+)/(\d+)\s*\)',
-                line
-            )
-            if not m:
+            # Quick pre-filter -- must be NC or NO fault
+            if 'SCOAP=' not in line:
                 continue
 
-            fault_type  = m.group(1)
-            fault_class = m.group(2)
-            node        = m.group(3)
-            cell        = m.group(4)
-            CC0         = int(m.group(5))
-            CC1         = int(m.group(6))
-            CO          = int(m.group(7))
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            if parts[0] not in ('sa0', 'sa1'):
+                continue
+            if parts[1] not in ('NC', 'NO'):
+                continue
 
+            fault_type  = parts[0]
+            fault_class = parts[1]
+            node        = parts[2]
+
+            # Extract cell name from (CELLNAME)
+            cell_m = re.search(r'\(([A-Z][^)]+)\)', line)
+            if not cell_m:
+                continue
+            cell = cell_m.group(1)
+
+            # Extract SCOAP values
+            scoap_m = re.search(r'SCOAP=(\d+)/(\d+)/(\d+)', line)
+            if not scoap_m:
+                continue
+
+            CC0 = int(scoap_m.group(1))
+            CC1 = int(scoap_m.group(2))
+            CO  = int(scoap_m.group(3))
+
+            # Skip reset pins and duplicates
             if any(x in node for x in ['RSTB', 'RST', 'reset']):
                 continue
             if node in seen:
                 continue
             seen.add(node)
 
+            # Only NC faults for XOR ITP
             if fault_class != 'NC':
                 continue
 
@@ -197,7 +209,6 @@ def process_circuit(circuit, fault_file, itp_counts):
 
     if not candidates:
         print("\n  ERROR: No NC fault candidates found in %s" % fault_file)
-        print("  Check that report_faults -class ND -verbose was run correctly")
         return None
 
     sa0_count = sum(1 for c in candidates if c['fault_type'] == 'sa0')
@@ -235,7 +246,8 @@ def main():
 
     if len(sys.argv) > 1:
         selected = sys.argv[1:]
-        circuits = dict((k, v) for k, v in circuits.items() if k in selected)
+        circuits = dict((k, v) for k, v in circuits.items()
+                        if k in selected)
         if not circuits:
             print("Error: unknown circuit(s) %s" % str(sys.argv[1:]))
             print("Valid options: b14 b15 b17")
