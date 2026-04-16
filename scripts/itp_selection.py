@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
-# ITP Selection Script  --  Generalised (ITC'99 + ISCAS'89 + Any Circuit)
+# ITP Selection Script  --  Python 2 Compatible Version
 # =============================================================================
 
 import re
@@ -9,7 +9,7 @@ import sys
 import os
 
 # ---------------------------------------------------------------------------
-# Thresholds (tune for experiments)
+# Thresholds
 # ---------------------------------------------------------------------------
 CP_MIN_CTRL   = 5
 CP_MIN_CO     = 3
@@ -17,148 +17,158 @@ OP_MIN_CO     = 20
 OP_MAX_CTRL   = 200
 MAX_PER_HIER  = 1
 
-OUTPUT_PINS = ('Y', 'Z', 'ZN', 'Q', 'QN', 'OUT', 'O', 'S', 'CO')
-
 
 # ---------------------------------------------------------------------------
-# Auto-discover fault reports
+# Discover circuits
 # ---------------------------------------------------------------------------
 def discover_fault_files():
     circuits = {}
-    for fname in os.listdir('.'):
-        if '_verbose.rpt' in fname:
-            circuit = fname.replace('_verbose.rpt', '').replace('_ND', '')
+    files = os.listdir('.')
+
+    for fname in files:
+        if fname.endswith('.rpt') and 'verbose' in fname:
+            circuit = fname.replace('_ND_verbose.rpt', '')
+            circuit = circuit.replace('_verbose.rpt', '')
             circuits[circuit] = fname
+
     return circuits
 
 
 # ---------------------------------------------------------------------------
-# Parse TetraMAX verbose report
+# Parse fault report
 # ---------------------------------------------------------------------------
 def parse_verbose_faults(filepath):
+
     cp_candidates = []
     op_candidates = []
-    seen_nodes    = set()
+    seen_nodes = set()
 
-    with open(filepath) as f:
-        for line in f:
-            line = line.strip()
+    f = open(filepath, 'r')
 
-            if 'SCOAP=' not in line:
-                continue
+    for line in f:
+        line = line.strip()
 
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            if parts[0] not in ('sa0', 'sa1'):
-                continue
+        if 'SCOAP=' not in line:
+            continue
 
-            fault_type  = parts[0]
-            fault_class = parts[1]
-            node        = parts[2]
+        parts = line.split()
+        if len(parts) < 3:
+            continue
 
-            if fault_class not in ('NC', 'NO'):
-                continue
+        if parts[0] not in ['sa0', 'sa1']:
+            continue
 
-            # Extract cell (optional)
-            cell_m = re.search(r'\(([A-Za-z0-9_]+)\)', line)
-            cell = cell_m.group(1) if cell_m else 'NA'
+        fault_type  = parts[0]
+        fault_class = parts[1]
+        node        = parts[2]
 
-            # Extract SCOAP
-            scoap_m = re.search(r'SCOAP=(\d+)/(\d+)/(\d+)', line)
-            if not scoap_m:
-                continue
+        if fault_class not in ['NC', 'NO']:
+            continue
 
-            CC0 = int(scoap_m.group(1))
-            CC1 = int(scoap_m.group(2))
-            CO  = int(scoap_m.group(3))
+        # Cell extraction (safe)
+        cell_m = re.search(r'\(([A-Za-z0-9_]+)\)', line)
+        if cell_m:
+            cell = cell_m.group(1)
+        else:
+            cell = 'NA'
 
-            # Skip reset/set
-            if any(x.lower() in node.lower() for x in ['rst', 'set']):
-                continue
+        # SCOAP extraction
+        scoap_m = re.search(r'SCOAP=(\d+)/(\d+)/(\d+)', line)
+        if not scoap_m:
+            continue
 
-            key = (node, fault_type)
-            if key in seen_nodes:
-                continue
-            seen_nodes.add(key)
+        CC0 = int(scoap_m.group(1))
+        CC1 = int(scoap_m.group(2))
+        CO  = int(scoap_m.group(3))
 
-            node_parts = node.split('/')
+        # Skip reset/set
+        if ('rst' in node.lower()) or ('set' in node.lower()):
+            continue
 
-            # Improved hierarchy handling (fix ISCAS flat issue)
-            if len(node_parts) >= 3:
-                hier = node_parts[0]
-            elif len(node_parts) == 2:
-                hier = node_parts[0]
+        key = (node, fault_type)
+        if key in seen_nodes:
+            continue
+        seen_nodes.add(key)
+
+        node_parts = node.split('/')
+
+        if len(node_parts) >= 2:
+            hier = node_parts[0]
+            pin  = node_parts[-1]
+        else:
+            hier = 'top'
+            pin  = node
+
+        # ------------------------------------------------------------------
+        # CP selection
+        # ------------------------------------------------------------------
+        if fault_class == 'NC' and pin == 'Y':
+
+            if fault_type == 'sa1':
+                ctrl_difficulty = CC0
             else:
-                hier = node  # ← FIX (not 'top')
+                ctrl_difficulty = CC1
 
-            pin = node_parts[-1] if len(node_parts) > 1 else node
+            if ctrl_difficulty < CP_MIN_CTRL:
+                continue
+            if CO < CP_MIN_CO:
+                continue
 
-            # ------------------------------------------------------------------
-            # CP selection
-            # ------------------------------------------------------------------
-            if fault_class == 'NC' and pin in OUTPUT_PINS:
+            CC_diff = abs(CC0 - CC1)
 
-                ctrl_difficulty = CC0 if fault_type == 'sa1' else CC1
+            cp_score = (
+                0.4 * ctrl_difficulty +
+                0.4 * CO +
+                0.2 * CC_diff
+            )
 
-                if ctrl_difficulty < CP_MIN_CTRL:
-                    continue
-                if CO < CP_MIN_CO:
-                    continue
+            cp_candidates.append({
+                'node'            : node,
+                'type'            : 'CP',
+                'fault_type'      : fault_type,
+                'class'           : fault_class,
+                'cell'            : cell,
+                'hier'            : hier,
+                'CC0'             : CC0,
+                'CC1'             : CC1,
+                'CO'              : CO,
+                'CC_diff'         : CC_diff,
+                'ctrl_difficulty' : ctrl_difficulty,
+                'score'           : round(cp_score, 2),
+            })
 
-                CC_diff = abs(CC0 - CC1)
+        # ------------------------------------------------------------------
+        # OP selection
+        # ------------------------------------------------------------------
+        elif fault_class == 'NO' and pin in ['Y', 'Q', 'QN']:
 
-                cp_score = (
-                    0.4 * ctrl_difficulty +
-                    0.4 * CO +
-                    0.2 * CC_diff
-                )
+            min_ctrl = min(CC0, CC1)
 
-                cp_candidates.append({
-                    'node'            : node,
-                    'type'            : 'CP',
-                    'fault_type'      : fault_type,
-                    'class'           : fault_class,
-                    'cell'            : cell,
-                    'hier'            : hier,
-                    'CC0'             : CC0,
-                    'CC1'             : CC1,
-                    'CO'              : CO,
-                    'CC_diff'         : CC_diff,
-                    'ctrl_difficulty' : ctrl_difficulty,
-                    'score'           : round(cp_score, 2),
-                })
+            if CO < OP_MIN_CO:
+                continue
+            if min_ctrl > OP_MAX_CTRL:
+                continue
 
-            # ------------------------------------------------------------------
-            # OP selection
-            # ------------------------------------------------------------------
-            elif fault_class == 'NO' and pin in OUTPUT_PINS:
+            op_score = (
+                0.6 * CO +
+                0.4 * min_ctrl
+            )
 
-                min_ctrl = min(CC0, CC1)
+            op_candidates.append({
+                'node'       : node,
+                'type'       : 'OP',
+                'fault_type' : fault_type,
+                'class'      : fault_class,
+                'cell'       : cell,
+                'hier'       : hier,
+                'CC0'        : CC0,
+                'CC1'        : CC1,
+                'CO'         : CO,
+                'min_ctrl'   : min_ctrl,
+                'score'      : round(op_score, 2),
+            })
 
-                if CO < OP_MIN_CO:
-                    continue
-                if min_ctrl > OP_MAX_CTRL:
-                    continue
-
-                op_score = (
-                    0.6 * CO +
-                    0.4 * min_ctrl
-                )
-
-                op_candidates.append({
-                    'node'       : node,
-                    'type'       : 'OP',
-                    'fault_type' : fault_type,
-                    'class'      : fault_class,
-                    'cell'       : cell,
-                    'hier'       : hier,
-                    'CC0'        : CC0,
-                    'CC1'        : CC1,
-                    'CO'         : CO,
-                    'min_ctrl'   : min_ctrl,
-                    'score'      : round(op_score, 2),
-                })
+    f.close()
 
     return cp_candidates, op_candidates
 
@@ -166,15 +176,21 @@ def parse_verbose_faults(filepath):
 # ---------------------------------------------------------------------------
 # Diversity filter
 # ---------------------------------------------------------------------------
-def diversify(candidates, max_per_hier=MAX_PER_HIER):
-    seen  = {}
+def diversify(candidates):
+
+    seen = {}
     result = []
+
     for c in candidates:
         h = c['hier']
-        count = seen.get(h, 0)
-        if count < max_per_hier:
-            seen[h] = count + 1
+
+        if h not in seen:
+            seen[h] = 0
+
+        if seen[h] < MAX_PER_HIER:
+            seen[h] += 1
             result.append(c)
+
     return result
 
 
@@ -182,15 +198,20 @@ def diversify(candidates, max_per_hier=MAX_PER_HIER):
 # Print table
 # ---------------------------------------------------------------------------
 def print_table(ranked, title):
-    print('\n' + '=' * 95)
-    print('  %s' % title)
-    print('=' * 95)
-    print('%-5s %-25s %-4s %-5s %-6s %-6s %-6s %-10s %-10s %s' % (
-        'Rank', 'Node', 'Type', 'FT', 'CC0', 'CC1', 'CO', 'Hier', 'Score', 'Cell'
-    ))
-    print('-' * 95)
 
-    for i, c in enumerate(ranked[:20], 1):
+    print('')
+    print('=' * 90)
+    print('  ' + title)
+    print('=' * 90)
+
+    print('%-5s %-25s %-4s %-5s %-6s %-6s %-6s %-10s %-10s %s' %
+          ('Rank', 'Node', 'Type', 'FT', 'CC0', 'CC1', 'CO', 'Hier', 'Score', 'Cell'))
+
+    print('-' * 90)
+
+    i = 1
+    for c in ranked[:20]:
+
         print('%-5d %-25s %-4s %-5s %-6d %-6d %-6d %-10s %-10.2f %s' % (
             i,
             c['node'][:25],
@@ -201,39 +222,50 @@ def print_table(ranked, title):
             c['CO'],
             c['hier'][:10],
             c['score'],
-            c['cell'],
+            c['cell']
         ))
+
+        i += 1
 
 
 # ---------------------------------------------------------------------------
 # Export CSV
 # ---------------------------------------------------------------------------
 def export_csv(ranked, fname, n):
+
     top_n = ranked[:n]
-    if not top_n:
+
+    if len(top_n) == 0:
+        print('  Warning: empty export ' + fname)
         return []
 
-    with open(fname, 'w') as f:
-        writer = csv.DictWriter(f, fieldnames=list(top_n[0].keys()))
-        writer.writeheader()
-        writer.writerows(top_n)
+    f = open(fname, 'wb')
+    writer = csv.DictWriter(f, fieldnames=top_n[0].keys())
 
-    print(f'  Exported top {n} --> {fname}')
+    writer.writeheader()
+    writer.writerows(top_n)
+
+    f.close()
+
+    print('  Exported top %d --> %s' % (n, fname))
+
     return top_n
 
 
 # ---------------------------------------------------------------------------
-# Process one circuit
+# Process circuit
 # ---------------------------------------------------------------------------
 def process_circuit(circuit, fault_file, itp_counts):
-    print('\n' + '#' * 95)
-    print(f'  CIRCUIT: {circuit.upper()}   |   File: {fault_file}')
-    print('#' * 95)
+
+    print('')
+    print('#' * 90)
+    print('  CIRCUIT: %s  FILE: %s' % (circuit.upper(), fault_file))
+    print('#' * 90)
 
     cp_raw, op_raw = parse_verbose_faults(fault_file)
 
-    print(f'\n  Raw CP: {len(cp_raw)}')
-    print(f'  Raw OP: {len(op_raw)}')
+    print('  Raw CP:', len(cp_raw))
+    print('  Raw OP:', len(op_raw))
 
     cp_sorted = sorted(cp_raw, key=lambda x: x['score'], reverse=True)
     op_sorted = sorted(op_raw, key=lambda x: x['score'], reverse=True)
@@ -241,87 +273,104 @@ def process_circuit(circuit, fault_file, itp_counts):
     cp_ranked = diversify(cp_sorted)
     op_ranked = diversify(op_sorted)
 
-    print(f'  After diversity: CP={len(cp_ranked)}, OP={len(op_ranked)}')
+    print('  After diversity CP=%d OP=%d' % (len(cp_ranked), len(op_ranked)))
 
-    print_table(cp_ranked, f'CP -- {circuit}')
-    print_table(op_ranked, f'OP -- {circuit}')
+    print_table(cp_ranked, 'CP - ' + circuit)
+    print_table(op_ranked, 'OP - ' + circuit)
 
     combined = []
-    ci, oi = 0, 0
+    ci = 0
+    oi = 0
+
     while ci < len(cp_ranked) or oi < len(op_ranked):
+
         if ci < len(cp_ranked):
-            combined.append(cp_ranked[ci]); ci += 1
+            combined.append(cp_ranked[ci])
+            ci += 1
+
         if oi < len(op_ranked):
-            combined.append(op_ranked[oi]); oi += 1
+            combined.append(op_ranked[oi])
+            oi += 1
 
     results = {}
 
     for n in itp_counts:
-        print(f'\n  --- Top {n} ---')
 
-        export_csv(cp_ranked, f'{circuit}_cp_top{n}.csv', n)
-        export_csv(op_ranked, f'{circuit}_op_top{n}.csv', n)
-        export_csv(combined,  f'{circuit}_combined_top{n}.csv', n)
+        print('  --- Top %d ---' % n)
+
+        export_csv(cp_ranked, circuit + '_cp_top' + str(n) + '.csv', n)
+        export_csv(op_ranked, circuit + '_op_top' + str(n) + '.csv', n)
+        export_csv(combined, circuit + '_combined_top' + str(n) + '.csv', n)
 
         results[n] = {
             'cp': cp_ranked[:n],
             'op': op_ranked[:n],
-            'combined': combined[:n],
+            'combined': combined[:n]
         }
 
     return results
 
 
 # ---------------------------------------------------------------------------
-# Summary CSV
+# Summary
 # ---------------------------------------------------------------------------
-def write_summary(all_results, itp_counts):
-    with open('itp_selection_summary.csv', 'w') as f:
-        writer = csv.DictWriter(
-            f, fieldnames=['circuit', 'tp_type', 'itp_count', 'nodes'])
-        writer.writeheader()
+def write_summary(all_results):
 
-        for circuit, by_count in all_results.items():
-            for n, data in by_count.items():
-                for tp_type, candidates in data.items():
-                    nodes = ' | '.join(c['node'] for c in candidates)
-                    writer.writerow({
-                        'circuit': circuit,
-                        'tp_type': tp_type,
-                        'itp_count': n,
-                        'nodes': nodes,
-                    })
+    fname = 'itp_selection_summary.csv'
+    f = open(fname, 'wb')
 
-    print('\n  Master summary generated')
+    writer = csv.DictWriter(f, fieldnames=['circuit', 'tp_type', 'itp_count', 'nodes'])
+    writer.writeheader()
+
+    for circuit in all_results:
+
+        for n in all_results[circuit]:
+
+            data = all_results[circuit][n]
+
+            for tp_type in data:
+
+                nodes = ' | '.join([c['node'] for c in data[tp_type]])
+
+                writer.writerow({
+                    'circuit': circuit,
+                    'tp_type': tp_type,
+                    'itp_count': n,
+                    'nodes': nodes
+                })
+
+    f.close()
+
+    print('  Summary written: ' + fname)
 
 
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 def main():
+
     itp_counts = [5, 10, 15]
 
     circuits = discover_fault_files()
 
     if len(sys.argv) > 1:
         selected = sys.argv[1:]
-        circuits = {k: v for k, v in circuits.items() if k in selected}
+        circuits = dict((k, v) for k, v in circuits.items() if k in selected)
 
-    if not circuits:
-        print('ERROR: No matching circuits found')
-        sys.exit(1)
+    if len(circuits) == 0:
+        print('ERROR: no circuits found')
+        return
 
     all_results = {}
 
-    for circuit, fault_file in circuits.items():
-        result = process_circuit(circuit, fault_file, itp_counts)
-        if result:
-            all_results[circuit] = result
+    for circuit in circuits:
+        result = process_circuit(circuit, circuits[circuit], itp_counts)
+        all_results[circuit] = result
 
-    if all_results:
-        write_summary(all_results, itp_counts)
+    write_summary(all_results)
 
-    print('\nDONE.')
+    print('')
+    print('DONE')
 
 
 if __name__ == '__main__':
